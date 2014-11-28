@@ -6,31 +6,39 @@
 
 package tv.bodil.testlol;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.Reader;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.Calendar;
+import java.util.List;
 
+import org.apache.maven.artifact.DependencyResolutionRequiredException;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
+import org.apache.maven.project.MavenProject;
 import org.mozilla.javascript.Context;
 import org.mozilla.javascript.ContextFactory;
 import org.mozilla.javascript.EcmaError;
 import org.mozilla.javascript.Script;
 import org.mozilla.javascript.Scriptable;
 
+
 /**
  * @goal test
  * @phase test
+ * @configurator include-project-dependencies
+ * @requiresDependencyResolution test
  */
 public class Testlol extends AbstractMojo {
+    
+    /** @parameter default-value="${project}" */
+    private MavenProject project;
+    
     /**
      * Location of the test suite.
      *
@@ -52,7 +60,7 @@ public class Testlol extends AbstractMojo {
      *
      * @parameter
      */
-    private File[] globalFiles;
+    private String[] globalFiles;
 
     /**
      * Path for report generation.
@@ -89,8 +97,22 @@ public class Testlol extends AbstractMojo {
      */
     private String jsLintOptions;
 
+    /**
+     * Set this to "true" to skip running tests.
+     *
+     * @parameter default-value="false" expression="${skipTests}"
+     */
+    private boolean skipTests;
+    
+    /**
+     * Set this to "true" to bypass unit tests entirely.
+     *
+     * @parameter default-value="false" expression="${maven.test.skip}"
+     */
+    private boolean skip;
+    
     private long timer;
-
+    
     private void startTimer() {
         timer = Calendar.getInstance().getTimeInMillis();
     }
@@ -101,35 +123,33 @@ public class Testlol extends AbstractMojo {
     }
 
     private Script loadJSResource(Context cx, String path) throws IOException {
-        Reader in = new InputStreamReader(getClass().getClassLoader()
-                .getResourceAsStream(path));
-        return cx.compileReader(in, "classpath:" + path, 1, null);
+    	getLog().debug("Loading JavaScript resource: " + path);
+    	return ScriptLoader.compileScript(cx, path);
     }
-
+    
     private void execJSResource(Context cx, Scriptable scope, String path)
             throws IOException {
         loadJSResource(cx, path).exec(cx, scope);
     }
 
-    public File copyClasspathResource(String path) throws IOException {
-        File source = new File(path);
-        File tempfile = File.createTempFile(source.getName(), ".tmp");
-        tempfile.deleteOnExit();
-        BufferedReader in = new BufferedReader(new InputStreamReader(getClass()
-                .getClassLoader().getResourceAsStream(path)));
-        BufferedWriter out = new BufferedWriter(new FileWriter(tempfile));
-        char[] buf = new char[1024];
-        int len;
-        while ((len = in.read(buf)) > 0) {
-            out.write(buf, 0, len);
-        }
-        in.close();
-        out.close();
-        return tempfile;
-    }
-
     public void execute() throws MojoExecutionException, MojoFailureException {
-        Context cx = new ContextFactory().enterContext();
+    	if (skipTests || skip) {
+    		getLog().info("Tests are skipped.");
+    		return;
+    	}
+    	
+        final ContextFactory contextFactory = new ContextFactory();
+
+        try {
+            ClassLoader cl = getClassLoader();
+            contextFactory.initApplicationClassLoader(cl);
+        } catch (MalformedURLException e) {
+            throw new RuntimeException(e);
+        } catch (DependencyResolutionRequiredException e) {
+            throw new RuntimeException(e);
+        }
+
+        Context cx = contextFactory.enterContext();
 
         try {
             // Run JSLint
@@ -158,21 +178,31 @@ public class Testlol extends AbstractMojo {
             Shell shell = new Shell(this, cx);
             markTimer("initStandardObjects()");
             getLog().info("Loading Env.js");
-            execJSResource(cx, shell, "/js/env.rhino.js");
-            execJSResource(cx, shell, "/js/testinit.js");
-            execJSResource(cx, shell, "/js/jsUnitCore.js");
+            execJSResource(cx, shell, "/tv/bodil/testlol/js/env.rhino.js");
+            execJSResource(cx, shell, "/tv/bodil/testlol/js/testinit.js");
+            execJSResource(cx, shell, "/tv/bodil/testlol/js/jsUnitCore.js");
             markTimer("loading environment");
             if (globalFiles != null) {
                 startTimer();
-                for (File file : globalFiles) {
-                    getLog().info("Loading " + file.getPath());
-                    cx.evaluateReader(shell, new FileReader(file), file
-                            .getPath(), 1, null);
+                for (String path : globalFiles) {
+                    if (path.startsWith("classpath:")) {
+                        path = path.substring(10);
+                        getLog().info("Loading classpath:" + path);
+                        execJSResource(cx, shell, path);
+                    } else {
+                        File file = new File(path);
+                        if (!file.isAbsolute()) {
+                            file = new File(project.getBasedir(), path);
+                        }
+                        getLog().info("Loading " + file.getPath());
+                        cx.evaluateReader(shell, new FileReader(file), file
+                                .getPath(), 1, null);
+                    }
                 }
                 markTimer("loading global scripts");
             }
 
-            Script testRunner = loadJSResource(cx, "/js/testrunner.js");
+            Script testRunner = loadJSResource(cx, "/tv/bodil/testlol/js/testrunner.js");
 
             startTimer();
             int failed = tests.runTests(shell, cx, testRunner, getLog());
@@ -198,5 +228,20 @@ public class Testlol extends AbstractMojo {
 
     public File getBasePath() {
         return this.basePath;
+    }
+
+    public ClassLoader getClassLoader() throws MalformedURLException, DependencyResolutionRequiredException {
+        @SuppressWarnings("unchecked")
+        List<String> classpathFiles = project.getTestClasspathElements();
+
+        URL[] urls = new URL[classpathFiles.size()];
+
+        for (int i = 0; i < classpathFiles.size(); ++i) {
+            final String artifact = classpathFiles.get(i);
+            getLog().debug("Testlol classpath artifact: " + artifact);
+            urls[i] = new File(artifact).toURI().toURL();
+        }
+
+        return new URLClassLoader(urls, Thread.currentThread().getContextClassLoader());
     }
 }

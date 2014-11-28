@@ -9,18 +9,17 @@ package tv.bodil.testlol;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.Map.Entry;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.Log;
 
 import com.googlecode.jslint4java.Issue;
 import com.googlecode.jslint4java.JSLint;
+import com.googlecode.jslint4java.JSLintBuilder;
+import com.googlecode.jslint4java.JSLintResult;
 import com.googlecode.jslint4java.Option;
 
 public class JSLintRunner {
@@ -29,7 +28,7 @@ public class JSLintRunner {
     private JSLint jsLint;
 
     public JSLintRunner(File basePath, String options) throws IOException, MojoExecutionException {
-        jsLint = new JSLint();
+        jsLint = new JSLintBuilder().fromDefault();
 
         if (options != null) {
             String[] optionsList = options.split(" +");
@@ -83,7 +82,8 @@ public class JSLintRunner {
                 path = path.substring(pathPrefix.length() + 1);
             }
             FileReader in = new FileReader(file);
-            List<Issue> issues = jsLint.lint(path, in);
+            JSLintResult result = jsLint.lint(path, in);
+            List<Issue> issues = result.getIssues();
             if (issues.size() > 0) {
                 errors += issues.size();
                 log.error("In file " + path + ":");

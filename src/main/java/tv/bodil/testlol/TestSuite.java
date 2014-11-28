@@ -9,9 +9,9 @@ package tv.bodil.testlol;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
-import java.io.FileReader;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
@@ -50,19 +50,8 @@ public class TestSuite {
         for (File file : reportPath.listFiles()) {
             file.delete();
         }
-        findTests(path);
-    }
-
-    private void findTests(File path) {
-        if (path.isDirectory()) {
-            for (File file : path.listFiles()) {
-                findTests(file);
-            }
-        } else if (path.isFile()) {
-            if (path.getName().endsWith(".js")) {
-                tests.add(path);
-            }
-        }
+        tests = ScriptLoader.findTests(path);
+        Collections.sort(tests);
     }
 
     public int runTests(Shell shell, Context cx, Script testRunner, Log log)
@@ -84,8 +73,7 @@ public class TestSuite {
 
             try {
                 log.info("Running test " + path);
-                FileReader in = new FileReader(file);
-                cx.evaluateReader(testScope, in, path, 1, null);
+                ScriptLoader.evaluateScript(cx, testScope, file, path);
                 testRunner.exec(cx, testScope);
                 Integer tried = (Integer) Context.jsToJava(testScope.get(
                         "tried", testScope), Integer.class);
